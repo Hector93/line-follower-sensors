@@ -6,7 +6,7 @@
 #include "protocol_registers.h"
 #include "hal_functions.h"
 
-volatile datagram_states datagram_state = STATE_SYNC;
+volatile datagramStates datagramState = STATE_SYNC;
 volatile bool received_datagram = false;
 
 
@@ -41,28 +41,28 @@ bool datagramStateMachineProcessByte(volatile uint8_t byte, volatile char* rxBuf
     static bool isReadDatagram = false;
     uint8_t datagramSize;
     
-    switch(datagram_state){
+    switch(datagramState){
         case STATE_SYNC:
-            datagram_state = byte == LS_SYNC ? STATE_ADDR : STATE_SYNC;
+            datagramState = byte == LS_SYNC ? STATE_ADDR : STATE_SYNC;
             return byte == LS_SYNC;
         case STATE_ADDR:
-            datagram_state = byte == LS_ADDR ? STATE_REGISTER : STATE_SYNC;
+            datagramState = byte == LS_ADDR ? STATE_REGISTER : STATE_SYNC;
             return byte == LS_ADDR;
         case STATE_REGISTER:
             isReadDatagram = isReadOperation(byte);
-            datagram_state = isReadDatagram ? STATE_CRC : STATE_BYTE_0;
+            datagramState = isReadDatagram ? STATE_CRC : STATE_BYTE_0;
             return true; // validation of the register will come latter
         case STATE_BYTE_0:
-            datagram_state = STATE_BYTE_1;
+            datagramState = STATE_BYTE_1;
             return true;
         case STATE_BYTE_1:
-            datagram_state = STATE_BYTE_2;
+            datagramState = STATE_BYTE_2;
             return true;
         case STATE_BYTE_2:
-            datagram_state = STATE_BYTE_3;
+            datagramState = STATE_BYTE_3;
             return true;
         case STATE_BYTE_3:
-            datagram_state = STATE_CRC;
+            datagramState = STATE_CRC;
             return true;
         case STATE_CRC:
             datagramSize = isReadDatagram ? DATAGRAM_READ_SIZE : DATAGRAM_WRITE_SIZE;
@@ -72,12 +72,13 @@ bool datagramStateMachineProcessByte(volatile uint8_t byte, volatile char* rxBuf
             if (validCRC || config->enableCRC == false){
                 received_datagram = true;
                 //TODO remove this from function
-                USART0.CTRLA &= ~(USART_RXCIE_bm);
+                USART0_SetReceiveCompleteISR(false);
+                //USART0.CTRLA &= ~(USART_RXCIE_bm);
             }
-            datagram_state = STATE_SYNC;
+            datagramState = STATE_SYNC;
             return false;
         default:
-            datagram_state = STATE_SYNC;
+            datagramState = STATE_SYNC;
             return false;
     }
 }
@@ -171,11 +172,13 @@ volatile delayRequest delayRequests[MAX_DELAY_REQUESTS];
 
 volatile uint8_t activeSensor = 0;
 volatile bool sensorsSampleCmplt = false;
+volatile bool reply = false;
 
 //TODO: 2 more allocations are done to avoid validating if the requested register
 // is block 5, due to it only having 1 channel
 volatile uint16_t rawADCValues[IR_SENSOR_COUNT+2];
 IRSensor sensors[IR_SENSOR_COUNT+2];
+volatile StateMachineStatus sendingStatus;
 
 volatile uint8_t* getActiveSensor(){
     return &activeSensor;
@@ -185,9 +188,9 @@ volatile bool* getSensorsSampleFlag(){
     return &sensorsSampleCmplt;
 }
 
-char* getTxBuffer(){
-    return tx;
-}
+//char* getTxBuffer(){
+//    return tx;
+//}
 
 volatile char* getRxBuffer(){
     return rx;
@@ -197,12 +200,16 @@ volatile uint16_t* getRawADCValues(){
     return rawADCValues;
 }
 
-IRSensor* getIrSensors(){
-    return sensors;
-}
+//IRSensor* getIrSensors(){
+//    return sensors;
+//}
 
 volatile delayRequest* getDelayRequests(){
     return delayRequests;
+}
+
+volatile StateMachineStatus* getStateMachineStatus(){
+    return &sendingStatus;
 }
 
 void ISRDelay(uint8_t ms, volatile bool* flag, void (*funPtr)(), volatile delayRequest* delayRequests, uint8_t delayIndex){
@@ -242,4 +249,74 @@ void updateIRData(volatile uint16_t value, IRSensor* sensor){
     }else if(sensor->value <= sensor->lower){
         sensor->procValue = false;
     }
+}
+
+void initializeStateMachine(){
+    
+    
+    for(uint8_t i = 0; i < IR_SENSOR_COUNT; i++){
+        sensors[i].lower = 0;
+        sensors[i].upper = 0xFFFF;
+        sensors[i].value = 0;
+        sensors[i].procValue = false;
+        rawADCValues[i] = 0;
+    }
+    
+    for(uint8_t i = 0; i < MAX_DELAY_REQUESTS; i++){
+        delayRequests[i].delay = 0;
+        delayRequests[i].flag = NULL;
+        delayRequests[i].funPtr = NULL;
+    }
+    setRst(true);
+    setBits(0);
+    setChannel(0);
+}
+
+
+void updateStateMachine(){
+    config_struct* cfgValues = getConfig();
+    if(received_datagram){
+            received_datagram = false;
+            if(processDatagram(rx, tx, sensors)){
+                ISRDelay(cfgValues->txDelay,&reply, NULL, delayRequests, TXDELAY);
+            }else{
+                USART0_SetReceiveCompleteISR(true);
+                //USART0.CTRLA |= USART_RXCIE_bm;
+            }
+        }
+        if(reply == true){
+            //sendInt(false);
+            reply = false;
+            USART0_oneWireSend((char*)tx, 8);
+            USART0_SetReceiveCompleteISR(true);
+            //USART0.CTRLA |= USART_RXCIE_bm;
+        }
+        
+        //volatile bool* sensorsSampleCmplt = getSensorsSampleFlag();
+        if(sensorsSampleCmplt && received_datagram == false){
+            sensorsSampleCmplt = false;
+            
+            for(uint8_t i = 0; i < IR_SENSOR_COUNT; i++){
+                updateIRData(rawADCValues[i], &sensors[i]);
+            }
+            if(cfgValues->intEnable){
+                sendInt(true);
+            }
+            if(cfgValues->sampleRate == 0){
+                ADCStartConversion();
+            }else{
+                ISRDelay(cfgValues->sampleRate, NULL, ADCStartConversion, delayRequests, SAMPLE_RATE);
+            }
+            
+        }
+}
+
+
+StateMachineStatus waitSendConfirmation(void)
+{
+    volatile StateMachineStatus* sendingStatus = getStateMachineStatus();
+    *sendingStatus = SENDING;
+    /* Will change inside RXC interrupt handler */
+    while(*sendingStatus == SENDING);
+    return *sendingStatus;
 }

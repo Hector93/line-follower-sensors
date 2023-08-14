@@ -89,8 +89,6 @@ typedef enum {
     BLOCK_5 = 15, /**< block 0 contains the sensors [15-16]. */
 } block_t;
 
-////
-
 /**
  * @brief takes the first bit of the register address and reports if the operation is read or write.
  *

@@ -55,11 +55,10 @@
 
 
 
-volatile bool reply = false;
 
 //datagram validation variables
 //volatile bool received_datagram = false;
-extern volatile bool received_datagram;
+//extern volatile bool received_datagram;
 
 
 
@@ -118,34 +117,20 @@ int main(void)
     timerInit();
     enableGlobalInt();
     
-    IRSensor* sensors = getIrSensors();
-    volatile uint16_t* rawADCValues = getRawADCValues();
-    for(uint8_t i = 0; i < IR_SENSOR_COUNT; i++){
-        sensors[i].lower = 0;
-        sensors[i].upper = 0xFFFF;
-        sensors[i].value = 0;
-        sensors[i].procValue = false;
-        rawADCValues[i] = 0;
-    }
-    volatile delayRequest* delayRequests = getDelayRequests();
-    for(uint8_t i = 0; i < MAX_DELAY_REQUESTS; i++){
-        delayRequests[i].delay = 0;
-        delayRequests[i].flag = NULL;
-        delayRequests[i].funPtr = NULL;
-    }
+    
     //USART0_oneWireSend("reading...\r\n", 12);
     
     
-    USART0.CTRLA |= USART_RXCIE_bm;
+    //USART0.CTRLA |= USART_RXCIE_bm;
     //ADC0.CTRLA |= ADC_ENABLE_bm;
-    setRst(true);
-    setBits(0);
-    setChannel(0);
+    //volatile uint16_t* rawADCValues = getRawADCValues();
+    //volatile delayRequest* delayRequests = getDelayRequests();
+    //IRSensor* sensors = getIrSensors();
     //TCA0.SINGLE.CTRLA |= TCA_SINGLE_ENABLE_bm;
     
-    config_struct* cfgValues = getConfig();
-    char* tx = getTxBuffer();
-    volatile char* rx = getRxBuffer();
+    //config_struct* cfgValues = getConfig();
+    //char* tx = getTxBuffer();
+    //volatile char* rx = getRxBuffer();
     //extern uint8_t sampleRate;//asd
     //extern uint8_t txDelay; //asd
     //static uint8_t acumulator = 0;
@@ -154,39 +139,9 @@ int main(void)
     //static bool enable = false;   //asd
     //static bool enableCRC = true; //asd
     //ADCStartConversion();
+    initializeStateMachine();
     while (1) 
     {   
-        if(received_datagram){
-            received_datagram = false;
-            if(processDatagram(rx, tx, sensors)){
-                ISRDelay(cfgValues->txDelay,&reply, NULL, delayRequests, TXDELAY);
-            }else{
-                USART0.CTRLA |= USART_RXCIE_bm;
-            }
-        }
-        if(reply == true){
-            //sendInt(false);
-            reply = false;
-            USART0_oneWireSend((char*)tx, 8);
-            USART0.CTRLA |= USART_RXCIE_bm;
-        }
-        
-        volatile bool* sensorsSampleCmplt = getSensorsSampleFlag();
-        if(*sensorsSampleCmplt && received_datagram == false){
-            *sensorsSampleCmplt = false;
-            
-            for(uint8_t i = 0; i < IR_SENSOR_COUNT; i++){
-                updateIRData(rawADCValues[i], &sensors[i]);
-            }
-            if(cfgValues->intEnable){
-                sendInt(true);
-            }
-            if(cfgValues->sampleRate == 0){
-                ADCStartConversion();
-            }else{
-            ISRDelay(cfgValues->sampleRate, NULL, ADCStartConversion, delayRequests, SAMPLE_RATE);
-            }
-            
-        }
+        updateStateMachine();
     }
 }
